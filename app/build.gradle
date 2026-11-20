@@ -1,0 +1,125 @@
+plugins {
+    id 'com.android.application'
+}
+
+// ---------------------------------------------------------------------------
+// Third-party sources (SDL2, SDL2_mixer, libzip) are downloaded at build time.
+// ---------------------------------------------------------------------------
+def thirdParty = file('src/main/cpp/third_party')
+
+def depSources = [
+    SDL2      : 'https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz',
+    SDL2_mixer: 'https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.1/SDL2_mixer-2.8.1.tar.gz',
+    libzip    : 'https://github.com/nih-at/libzip/releases/download/v1.11.4/libzip-1.11.4.tar.gz',
+]
+
+def ensureDeps = {
+    depSources.each { name, url ->
+        def dest = new File(thirdParty, name)
+        if (new File(dest, 'CMakeLists.txt').exists()) {
+            return
+        }
+        logger.lifecycle("DSDA: downloading ${name} from ${url}")
+        thirdParty.mkdirs()
+        def archive = new File(thirdParty, "${name}.tar.gz")
+        def conn = new URL(url).openConnection()
+        conn.setRequestProperty('User-Agent', 'Mozilla/5.0')
+        conn.connectTimeout = 30000
+        conn.readTimeout = 120000
+        conn.inputStream.withStream { ins -> archive.withOutputStream { it << ins } }
+        project.delete(dest)
+        project.copy {
+            from tarTree(resources.gzip(archive))
+            into dest
+            includeEmptyDirs = false
+            eachFile { FileCopyDetails fcd ->
+                // strip the top-level "<name>-<version>/" directory
+                fcd.relativePath = new RelativePath(true, fcd.relativePath.segments.drop(1) as String[])
+            }
+        }
+        archive.delete()
+        if (!new File(dest, 'CMakeLists.txt').exists()) {
+            throw new GradleException("DSDA: ${name} was downloaded but CMakeLists.txt is missing in ${dest}")
+        }
+    }
+}
+
+// Run at configuration time so the SDL Java sources and CMake inputs always exist.
+ensureDeps()
+
+tasks.register('downloadDeps') {
+    group = 'dsda'
+    description = 'Downloads SDL2, SDL2_mixer and libzip sources (no-op if already present)'
+    doLast { ensureDeps() }
+}
+
+android {
+    namespace 'com.ds.da'
+    compileSdk 36
+    ndkVersion '29.0.14033849'
+
+    defaultConfig {
+        applicationId 'com.ds.da'
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName "0.30.1"
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_static',
+                          '-DANDROID_PLATFORM=android-21',
+                          '-DCMAKE_BUILD_TYPE=Release'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.31.6'
+        }
+    }
+
+    sourceSets {
+        main {
+            // SDLActivity & friends come with the downloaded SDL2 sources
+            java.srcDir 'src/main/cpp/third_party/SDL2/android-project/app/src/main/java'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    // keep the WAD asset uncompressed-friendly and avoid lint stopping the build
+    androidResources {
+        noCompress 'wad'
+    }
+    lint {
+        abortOnError false
+    }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+}
+
+dependencies {
+    implementation libs.androidx.core
+    implementation libs.androidx.appcompat
+    implementation libs.material
+    implementation libs.androidx.constraintlayout
+}
